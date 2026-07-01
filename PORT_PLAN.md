@@ -55,6 +55,11 @@ Key numeric details already extracted:
   bidirectional (no-mask) + causal paths both match the numpy oracle `tools/qwen3_ref.py`
   (row cosine 1.000000, mean abs diff 0.0033, f16 precision). Retires the biggest arch risk.
 - **P3 — Stage0 diffusion loop** (timesteps, unmask schedule, CFG) → token grid parity.
+  🔬 FULLY DESIGNED — algorithm reverse-engineered & documented in [STAGE0_DESIGN.md](STAGE0_DESIGN.md).
+  Key finding: **deterministic at `class_temperature=0, position_temperature=0`** → bit-exact
+  testable. Reuses the P2 backbone graph. C++ implementation (`src/stage0.cpp`) is the remaining
+  build; until the frontend (P5) exists it consumes a dumped prepared-batch so the diffusion math
+  is validated in isolation against a temps=0 golden grid.
 - **P4 — Stage1 + DAC decoder.** ✅ DONE & TESTED. `src/test_codec.cpp`: RVQ dequant + fc2 +
   acoustic DAC decoder (conv1d, conv_transpose_1d with crop math, dilated residual units, Snake).
   Decode uses ONLY the acoustic path (no semantic). Golden `(tokens[8,72]→waveform[69120])`
