@@ -18,3 +18,7 @@ add_subdirectory(vendor/ggml)
 add_executable(test_qwen3 src/test_qwen3.cpp)
 target_link_libraries(test_qwen3 PRIVATE ggml)
 target_include_directories(test_qwen3 PRIVATE vendor/ggml/include)
+
+add_executable(test_codec src/test_codec.cpp)
+target_link_libraries(test_codec PRIVATE ggml)
+target_include_directories(test_codec PRIVATE vendor/ggml/include)

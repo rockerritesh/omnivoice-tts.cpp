@@ -168,8 +168,15 @@ def convert_codec(src: Path, out: Path, want_f16: bool) -> None:
     writer.add_uint32("codec.semantic_hidden_size",
                       cfg["semantic_model_config"]["hidden_size"])
 
+    # Decode path only (quantizer + fc2 + acoustic_decoder). The semantic /
+    # acoustic_encoder tensors are for voice-clone ENCODE (P5) and some of their
+    # names exceed ggml's 63-char limit; include them later behind an encode flag.
+    keep_prefixes = ("quantizer.", "fc2.", "acoustic_decoder.")
     n = skipped = 0
     for key, arr in iter_tensors(st):
+        if not key.startswith(keep_prefixes):
+            skipped += 1
+            continue
         # inference decode needs floats only; drop bool/training-only buffers
         if key.endswith(".inited"):
             skipped += 1
@@ -177,8 +184,17 @@ def convert_codec(src: Path, out: Path, want_f16: bool) -> None:
         if arr.dtype == np.bool_ or arr.dtype == np.uint8:
             skipped += 1
             continue
+        if len(key) >= 64:
+            print(f"  WARN skip long name ({len(key)}): {key}")
+            skipped += 1
+            continue
         arr = np.ascontiguousarray(arr)
-        writer.add_tensor(key, cast_for_gguf(key, arr, want_f16))
+        # ggml_conv_1d / conv_transpose_1d require F16 kernels (im2col path).
+        # 3D tensors here are conv kernels; everything else (codebook embeds,
+        # fc2, biases, snake alphas) stays F32 for numerical fidelity.
+        if arr.ndim == 3 and key.endswith(".weight") and arr.dtype == np.float32:
+            arr = arr.astype(np.float16)  # conv kernels only; snake .alpha stays f32
+        writer.add_tensor(key, arr)
         n += 1
 
     writer.write_header_to_file()

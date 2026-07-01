@@ -51,9 +51,15 @@ Key numeric details already extracted:
   `omnivoice-generator.gguf` (Qwen3→llama.cpp names + audio tensors + contracts KV, 1.1 GB f16)
   and `omnivoice-codec.gguf` (DAC decoder + RVQ + configs, 386 MB f16). Verified via GGUFReader.
   Full tensor map: [MODEL_SPEC.md](MODEL_SPEC.md).
-- **P2 — Qwen3 backbone in ggml**, validated vs golden hidden states.
+- **P2 — Qwen3 backbone in ggml.** ✅ DONE & TESTED. `src/test_qwen3.cpp` on vendored ggml;
+  bidirectional (no-mask) + causal paths both match the numpy oracle `tools/qwen3_ref.py`
+  (row cosine 1.000000, mean abs diff 0.0033, f16 precision). Retires the biggest arch risk.
 - **P3 — Stage0 diffusion loop** (timesteps, unmask schedule, CFG) → token grid parity.
-- **P4 — Stage1 + DAC decoder** → 24 kHz PCM parity vs golden waveform.
+- **P4 — Stage1 + DAC decoder.** ✅ DONE & TESTED. `src/test_codec.cpp`: RVQ dequant + fc2 +
+  acoustic DAC decoder (conv1d, conv_transpose_1d with crop math, dilated residual units, Snake).
+  Decode uses ONLY the acoustic path (no semantic). Golden `(tokens[8,72]→waveform[69120])`
+  dumped from an instrumented omnivoice-rs; C++ matches at **cosine 0.999986, SNR 45.67 dB**.
+  Conv kernels f16 (ggml im2col requirement); everything else f32.
 - **P5 — Voice cloning** (HuBERT+DAC encode + whisper.cpp ASR) and long-form chunking.
 - **P6 — CLI** (`omnivoice-cpp infer --text --language --output`) + optional server.
 
