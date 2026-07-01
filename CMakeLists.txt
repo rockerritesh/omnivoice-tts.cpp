@@ -26,3 +26,9 @@ target_include_directories(test_codec PRIVATE vendor/ggml/include)
 add_executable(stage0 src/stage0.cpp)
 target_link_libraries(stage0 PRIVATE ggml)
 target_include_directories(stage0 PRIVATE vendor/ggml/include)
+
+add_executable(test_tokenizer src/test_tokenizer.cpp)
+
+add_executable(tts src/tts.cpp)
+target_link_libraries(tts PRIVATE ggml)
+target_include_directories(tts PRIVATE vendor/ggml/include)

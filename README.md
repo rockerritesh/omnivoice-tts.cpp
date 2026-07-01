@@ -5,24 +5,27 @@ A from-scratch native inference engine for [k2-fsa/OmniVoice](https://huggingfac
 in the spirit of `vibevoice.cpp` / `parakeet.cpp`. No such engine existed before; this ports the
 [omnivoice-rs](https://github.com/FerrisMind/omnivoice-rs) (Candle) reference to ggml.
 
-## Status — the entire neural pipeline works and is numerically verified
+## Status — COMPLETE: raw text → 24 kHz speech, entirely in C++/ggml
 
 ```
-text ─▶ [frontend/tokenizer] ─▶ prepared batch ─▶ [stage0 diffusion] ─▶ tokens[8,T] ─▶ [codec] ─▶ 24kHz WAV
-          P5: TODO (BPE +                 ✅          ✅ 100% token          ✅ SNR
-          chat template + duration)                     match (f32)         45–53 dB
+text ─▶ [BPE tokenizer + prompt] ─▶ [stage0 diffusion] ─▶ tokens[8,T] ─▶ [DAC codec] ─▶ 24kHz WAV
+             ✅ exact ids              ✅ 100% token          ✅ SNR 45–53 dB
 ```
+`./build/tts gen.gguf codec.gguf tokenizer.bin out.wav --text "Hello world." --lang en`
+reproduces the reference audio at **cosine 1.00000** for the sample sentence.
 
 | Component | C++ file | Test vs reference | Result |
 |---|---|---|---|
 | Qwen3-0.6B backbone (bidirectional) | `src/test_qwen3.cpp` | vs numpy oracle | **cosine 1.000000** |
 | Stage0 masked-diffusion generator | `src/stage0.cpp` | token grid, f32, temps=0 | **100.00% (576/576)** |
 | Higgs/DAC acoustic vocoder | `src/test_codec.cpp` | vs reference waveform | **SNR 45.67 dB** |
-| **Full pipeline** (batch→tokens→audio) | stage0 → codec | vs reference | **cosine 0.999998, SNR 53.11 dB** |
+| Qwen2 byte-level BPE tokenizer | `src/tokenizer.hpp` | ids vs HF (en + Devanagari) | **exact match** |
+| **Full text→speech** | `src/tts.cpp` | WAV vs reference | **cosine 1.00000, SNR 53 dB** |
 
-The only piece not yet in C++ is the **text frontend** (tokenizer + chat template + duration →
-prepared batch). Until it lands, `stage0` consumes a prepared batch dumped from the reference,
-so the full neural engine is exercised and validated end-to-end.
+Every stage runs on ggml (CPU) and is numerically validated against omnivoice-rs. The tokenizer
+handles Latin, **Devanagari** (नमस्ते → identical ids — relevant for Maithili), digits, and
+contractions. Voice cloning (reference-audio encode via HuBERT + Whisper) is the remaining
+optional feature; the core zero-shot/voice-design TTS path is complete.
 
 ## Architecture (see `MODEL_SPEC.md`, `STAGE0_DESIGN.md`)
 - **Backbone**: Qwen3-0.6B, 28 layers, **bidirectional** (non-causal) attention, per-head q/k
@@ -34,13 +37,13 @@ so the full neural engine is exercised and validated end-to-end.
 
 ## Build & run
 ```bash
-./scripts/setup.sh                 # fetch ggml, convert weights (needs the HF snapshot), build
-# backbone parity test:
-uv run --with safetensors --with numpy python tools/qwen3_ref.py --mask full
+./scripts/setup.sh                 # fetch ggml, convert weights + tokenizer, build
+# end-to-end text -> speech:
+./build/tts models/omnivoice-generator.gguf models/omnivoice-codec.gguf \
+    models/tokenizer.bin out.wav --text "Hello, this is a test." --lang en
+# component tests:
+./build/test_tokenizer models/tokenizer.bin
 ./build/test_qwen3 models/omnivoice-generator.gguf /tmp/h.bin "9707,11,1879,0,151645,198,40,1079"
-# full neural pipeline from a prepared batch:
-./build/stage0     models/omnivoice-generator.gguf golden/stage0 /tmp/tokens.bin
-./build/test_codec models/omnivoice-codec.gguf     /tmp/tokens.bin /tmp/audio.bin
 ```
 
 ## Key facts (hard-won)

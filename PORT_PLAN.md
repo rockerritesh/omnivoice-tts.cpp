@@ -72,8 +72,11 @@ Key numeric details already extracted:
   Decode uses ONLY the acoustic path (no semantic). Golden `(tokens[8,72]→waveform[69120])`
   dumped from an instrumented omnivoice-rs; C++ matches at **cosine 0.999986, SNR 45.67 dB**.
   Conv kernels f16 (ggml im2col requirement); everything else f32.
-- **P5 — Voice cloning** (HuBERT+DAC encode + whisper.cpp ASR) and long-form chunking.
-- **P6 — CLI** (`omnivoice-cpp infer --text --language --output`) + optional server.
+- **P5 — Text frontend + CLI.** ✅ DONE & TESTED. `src/tokenizer.hpp` (Qwen2 byte-level BPE,
+  exported by `tools/export_tokenizer.py`) + `src/tts.cpp` (prompt `<|lang_start|>…<|text_end|>`
+  + char-weight duration estimator + full text→WAV CLI). Tokenizer matches HF exactly (English,
+  Devanagari, digits, contractions); `tts` reproduces the reference at **cosine 1.00000, SNR 53 dB**.
+- **Remaining (optional)**: voice cloning (HuBERT+DAC encode + whisper.cpp ASR), long-form chunking.
 
 ## Confirmed checkpoint layout & contracts (from `omnivoice.artifacts.json`)
 

@@ -15,6 +15,7 @@ fi
 #    to f16 internally (ggml im2col requirement); its other weights stay f32.
 uv run --with gguf --with safetensors --with numpy \
   python tools/convert_omnivoice_to_gguf.py --dtype f32 --out models
+uv run --with tokenizers python tools/export_tokenizer.py --out models/tokenizer.bin
 
 # 3. Build.
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
