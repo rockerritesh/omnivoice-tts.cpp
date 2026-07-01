@@ -1,8 +1,11 @@
 # Third-party reference clones (studied, not vendored)
 /reference/
+# ggml source clone (fetched via scripts/setup.sh; treat as external dep)
+/vendor/
 
 # Build artifacts
 /build/
+build_configure.log
 *.o
 *.a
 *.gguf
