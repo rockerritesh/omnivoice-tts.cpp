@@ -14,6 +14,8 @@ build_configure.log
 /models/
 *.safetensors
 *.wav
+# ...but DO ship the committed demo samples
+!/samples/*.wav
 
 # Conversation log (per global convention)
 Conversation.md

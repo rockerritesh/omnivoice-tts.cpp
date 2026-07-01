@@ -1,0 +1,29 @@
+omnivoice-tts.cpp — third-party notices
+=======================================
+
+This repository contains original C++/ggml engine code and Python tooling,
+licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE) —
+i.e. free for research, education, and other noncommercial use, NOT for
+commercial use.
+
+It builds on / interoperates with the following, each under its own license:
+
+- ggml  (https://github.com/ggml-org/ggml)  — MIT License.
+  Fetched into vendor/ggml at build time; not redistributed here.
+
+- OmniVoice model  (https://huggingface.co/k2-fsa/OmniVoice) — the neural
+  network weights, subject to k2-fsa's model license/terms. Weights are NOT
+  included in this repository; users download them separately and are bound
+  by the upstream license. This project only ships code that converts and
+  runs those weights.
+
+- omnivoice-rs  (https://github.com/FerrisMind/omnivoice-rs, Apache-2.0) — the
+  Rust/Candle reference implementation, used only as a behavioral reference and
+  for generating golden test vectors. No omnivoice-rs source is copied into
+  this repository. A fork is maintained at
+  https://github.com/rockerritesh/omnivoice-rs to keep the reference available.
+
+- The Higgs Audio V2 tokenizer weights ship inside the OmniVoice checkpoint and
+  carry the license in audio_tokenizer/LICENSE of that checkpoint.
+
+If you need commercial use of the code in this repository, contact the author.

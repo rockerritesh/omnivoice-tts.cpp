@@ -32,7 +32,10 @@ struct Hparams { int n_layer, n_embd, n_head, n_kv, hd; float eps, theta; };
 // ---- Qwen3 backbone + audio heads on a prebuilt embedding stream. Returns [1025,8,S]. ----
 static std::vector<float> forward_audio_logits(ggml_context * wctx, const Hparams & hp, int n_cb, int vocab,
         const std::vector<int32_t> & text_ids, const std::vector<int32_t> & aud_ids, const std::vector<float> & amask, int S) {
-    ggml_init_params cp = { (size_t) 1024 * 1024 * 1024, nullptr, false };
+    // scale the compute pool with sequence length (all 28 layers' intermediates
+    // coexist under no_alloc=false); ~8 MB/token is comfortably sufficient.
+    size_t mem = (size_t) 1024 * 1024 * 1024 + (size_t) S * 8 * 1024 * 1024;
+    ggml_init_params cp = { mem, nullptr, false };
     ggml_context * ctx = ggml_init(cp);
     ggml_tensor * tids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, S);
     memcpy(tids->data, text_ids.data(), S * sizeof(int32_t));

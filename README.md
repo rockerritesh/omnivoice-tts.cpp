@@ -3,7 +3,8 @@
 A from-scratch native inference engine for [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice)
 (0.6B, 600+ languages, 24 kHz zero-shot TTS), built on [ggml](https://github.com/ggml-org/ggml) —
 in the spirit of `vibevoice.cpp` / `parakeet.cpp`. No such engine existed before; this ports the
-[omnivoice-rs](https://github.com/FerrisMind/omnivoice-rs) (Candle) reference to ggml.
+[omnivoice-rs](https://github.com/FerrisMind/omnivoice-rs) (Candle) reference to ggml
+(mirror fork: [rockerritesh/omnivoice-rs](https://github.com/rockerritesh/omnivoice-rs)).
 
 ## Status — COMPLETE: raw text → 24 kHz speech, entirely in C++/ggml
 
@@ -26,6 +27,39 @@ Every stage runs on ggml (CPU) and is numerically validated against omnivoice-rs
 handles Latin, **Devanagari** (नमस्ते → identical ids — relevant for Maithili), digits, and
 contractions. Voice cloning (reference-audio encode via HuBERT + Whisper) is the remaining
 optional feature; the core zero-shot/voice-design TTS path is complete.
+
+## Multilingual samples (`samples/`)
+
+Generated end-to-end by `./build/tts` (24 kHz mono WAV). OmniVoice supports 600+ languages;
+these demo a few, including **Maithili** and **Nepali**:
+
+| Lang | code | file | text |
+|---|---|---|---|
+| English | `en` | [samples/en.wav](samples/en.wav) | "Hello, this is a multilingual text to speech demo…" |
+| Hindi | `hi` | [samples/hi.wav](samples/hi.wav) | "नमस्ते, यह … बहुभाषी वाक् संश्लेषण है।" |
+| Maithili | `mai` | [samples/mai.wav](samples/mai.wav) | "प्रणाम, ई एकटा मैथिली वाक् संश्लेषण डेमो अछि…" |
+| Nepali | `npi` | [samples/npi.wav](samples/npi.wav) | "नमस्ते, यो … बहुभाषिक वाक् प्रणाली हो।" |
+| Chinese | `zh` | [samples/zh.wav](samples/zh.wav) | "你好，这是一个… 多语言语音合成演示。" |
+| Spanish | `es` | [samples/es.wav](samples/es.wav) | "Hola, esta es una demostración… de voz multilingüe." |
+
+**Multilingual correctness is verified, not just "it runs":** the C++ output matches the
+omnivoice-rs reference bit-exactly (temps=0) for **English (cosine 1.00000)** and
+**Maithili (cosine 1.00000, SNR 52 dB)**.
+
+## Performance
+
+Apple M4 Pro, CPU, f32, "Hello, this is a test…" (2.88 s of audio, 32 diffusion steps):
+
+| Engine | wall time | RTF | runtime deps |
+|---|---|---|---|
+| **this (C++/ggml)** | **22.8 s** | ~7.9× | ggml only (single native binary) |
+| omnivoice-rs (Rust/Candle) | 22.2 s | ~7.7× | Candle |
+| official (PyTorch) | — | — | torch + torchaudio |
+
+Honest take: on CPU it's **on par** with the Candle reference (not faster yet) — the win is a
+lean, dependency-free native binary with GGUF weights, not raw speed. Headroom for large gains
+is untapped: Metal backend (currently CPU-only), graph/KV reuse instead of 64 full recomputes,
+and quantization. The upstream model reports RTF 0.025 (40× real-time) on GPU.
 
 ## Architecture (see `MODEL_SPEC.md`, `STAGE0_DESIGN.md`)
 - **Backbone**: Qwen3-0.6B, 28 layers, **bidirectional** (non-causal) attention, per-head q/k
@@ -55,5 +89,11 @@ optional feature; the core zero-shot/voice-design TTS path is complete.
 
 ## Layout
 `src/` C++ engine · `tools/` GGUF converter + numpy oracles · `vendor/ggml` (fetched) ·
-`reference/omnivoice-rs` (studied, gitignored) · `models/*.gguf` (generated).
+`reference/omnivoice-rs` (studied, gitignored) · `models/*.gguf` (generated) · `samples/` demos.
+
+## License
+Original code here: **PolyForm Noncommercial License 1.0.0** — free for research, education, and
+other **noncommercial** use; **not for commercial use** (see [LICENSE](LICENSE)). Third-party
+dependencies and the OmniVoice model weights carry their own licenses — see [NOTICE](NOTICE).
+Model weights are not included; download them from [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice).
 ```
