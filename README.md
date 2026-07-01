@@ -69,16 +69,33 @@ and quantization. The upstream model reports RTF 0.025 (40× real-time) on GPU.
 - **Codec**: Higgs Audio V2 tokenizer's acoustic path — RVQ dequant → fc2 → DAC decoder
   (conv1d, transposed-conv upsampling ×960, Snake activations) → 24 kHz PCM.
 
+## Prerequisites
+- A C++17 compiler + **CMake ≥ 3.16** (macOS: Xcode Command Line Tools; Linux: gcc/clang)
+- **git**, and [**uv**](https://github.com/astral-sh/uv) (used to run the Python tooling with
+  pinned deps — no venv setup needed)
+- **~24 GB RAM** for CPU f32 inference; **~7 GB disk** (3.5 GB model download + 2.7 GB GGUFs)
+- Internet access for the first run (fetches ggml + the OmniVoice weights from Hugging Face)
+
 ## Build & run
 ```bash
-./scripts/setup.sh                 # fetch ggml, convert weights + tokenizer, build
-# end-to-end text -> speech:
+git clone https://github.com/rockerritesh/omnivoice-tts.cpp
+cd omnivoice-tts.cpp
+./scripts/setup.sh          # downloads model (~3.5GB), fetches ggml, converts weights, builds
+
+# end-to-end text -> speech (writes out.wav, 24 kHz mono):
 ./build/tts models/omnivoice-generator.gguf models/omnivoice-codec.gguf \
     models/tokenizer.bin out.wav --text "Hello, this is a test." --lang en
+
+# other languages (code from k2-fsa/OmniVoice, e.g. hi, mai, npi, zh, es):
+./build/tts models/omnivoice-generator.gguf models/omnivoice-codec.gguf \
+    models/tokenizer.bin mai.wav --text "प्रणाम, ई मैथिली टेस्ट अछि।" --lang mai
+
+# optional flags: --duration SEC  --num-step 32  --guidance 2.0  --instruct "..."
 # component tests:
 ./build/test_tokenizer models/tokenizer.bin
-./build/test_qwen3 models/omnivoice-generator.gguf /tmp/h.bin "9707,11,1879,0,151645,198,40,1079"
 ```
+If you already have the `k2-fsa/OmniVoice` snapshot in `~/.cache/huggingface`, the download in
+step 2 is a no-op. Weights are pulled automatically; nothing model-related is committed here.
 
 ## Key facts (hard-won)
 - **Generator must be f32.** With f16, argmax flips cascade over 32 diffusion steps (→ ~7% token
@@ -96,4 +113,3 @@ Original code here: **PolyForm Noncommercial License 1.0.0** — free for resear
 other **noncommercial** use; **not for commercial use** (see [LICENSE](LICENSE)). Third-party
 dependencies and the OmniVoice model weights carry their own licenses — see [NOTICE](NOTICE).
 Model weights are not included; download them from [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice).
-```
