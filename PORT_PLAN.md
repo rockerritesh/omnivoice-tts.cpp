@@ -60,6 +60,13 @@ Key numeric details already extracted:
   testable. Reuses the P2 backbone graph. C++ implementation (`src/stage0.cpp`) is the remaining
   build; until the frontend (P5) exists it consumes a dumped prepared-batch so the diffusion math
   is validated in isolation against a temps=0 golden grid.
+  ✅ DONE & TESTED — `src/stage0.cpp`: reuses the P2 backbone, builds inputs_embeds (text vs
+  summed-audio via audio_mask), runs cond+uncond forwards separately (no padding needed), CFG in
+  log-space, argmax, confidence−layer_penalty top-k unmask. With the **f32 generator** it matches
+  the reference token grid **100.00% (576/576) bit-exactly**. (f16 generator only ~7% — argmax
+  flips cascade over 32 steps; f32 fixes it. Generator is now shipped f32.)
+- **P6 — end-to-end C++** (prepared batch → stage0 → codec → WAV): **cosine 0.999998, SNR 53.11 dB**
+  vs the reference. The entire neural pipeline runs in C++/ggml. Only the text frontend remains.
 - **P4 — Stage1 + DAC decoder.** ✅ DONE & TESTED. `src/test_codec.cpp`: RVQ dequant + fc2 +
   acoustic DAC decoder (conv1d, conv_transpose_1d with crop math, dilated residual units, Snake).
   Decode uses ONLY the acoustic path (no semantic). Golden `(tokens[8,72]→waveform[69120])`

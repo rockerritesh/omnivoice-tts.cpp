@@ -22,3 +22,7 @@ target_include_directories(test_qwen3 PRIVATE vendor/ggml/include)
 add_executable(test_codec src/test_codec.cpp)
 target_link_libraries(test_codec PRIVATE ggml)
 target_include_directories(test_codec PRIVATE vendor/ggml/include)
+
+add_executable(stage0 src/stage0.cpp)
+target_link_libraries(stage0 PRIVATE ggml)
+target_include_directories(stage0 PRIVATE vendor/ggml/include)
