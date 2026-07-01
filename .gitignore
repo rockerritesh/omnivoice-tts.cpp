@@ -1,0 +1,16 @@
+# Third-party reference clones (studied, not vendored)
+/reference/
+
+# Build artifacts
+/build/
+*.o
+*.a
+*.gguf
+
+# Models / audio
+/models/
+*.safetensors
+*.wav
+
+# Conversation log (per global convention)
+Conversation.md
