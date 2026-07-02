@@ -13,7 +13,9 @@ text ─▶ [BPE tokenizer + prompt] ─▶ [stage0 diffusion] ─▶ tokens[8,T
              ✅ exact ids              ✅ 100% token          ✅ SNR 45–53 dB
 ```
 `./build/tts gen.gguf codec.gguf tokenizer.bin out.wav --text "Hello world." --lang en`
-reproduces the reference audio at **cosine 1.00000** for the sample sentence.
+reproduces the reference audio at **cosine 1.00000** for the sample sentence. Runs on **CPU,
+NVIDIA CUDA, or Apple Metal** — Tesla T4 CUDA is ~44× faster than CPU on the backbone and still
+100% token-exact; Apple M4 Metal is faster than real-time (see Performance).
 
 | Component | C++ file | Test vs reference | Result |
 |---|---|---|---|
@@ -46,20 +48,29 @@ these demo a few, including **Maithili** and **Nepali**:
 omnivoice-rs reference bit-exactly (temps=0) for **English (cosine 1.00000)** and
 **Maithili (cosine 1.00000, SNR 52 dB)**.
 
-## Performance
+## Performance & backends (CPU / CUDA / Metal)
 
-Apple M4 Pro, CPU, f32, "Hello, this is a test…" (2.88 s of audio, 32 diffusion steps):
+Two binaries: **`tts`** (plain CPU path, reference-exact) and **`tts_cuda`** (same pipeline via the
+ggml-backend API — **CUDA**, **Metal**, or CPU). The Qwen3 diffusion backbone runs on the accelerator;
+the cheap codec stays on CPU (`conv_transpose_1d` has no GPU kernel).
 
-| Engine | wall time | RTF | runtime deps |
-|---|---|---|---|
-| **this (C++/ggml)** | **22.8 s** | ~7.9× | ggml only (single native binary) |
-| omnivoice-rs (Rust/Candle) | 22.2 s | ~7.7× | Candle |
-| official (PyTorch) | — | — | torch + torchaudio |
+Benchmark — "Hello, this is a test…" (2.88 s audio, 32 diffusion steps = 64 backbone forwards):
 
-Honest take: on CPU it's **on par** with the Candle reference (not faster yet) — the win is a
-lean, dependency-free native binary with GGUF weights, not raw speed. Headroom for large gains
-is untapped: Metal backend (currently CPU-only), graph/KV reuse instead of 64 full recomputes,
-and quantization. The upstream model reports RTF 0.025 (40× real-time) on GPU.
+| Device / backend | dtype | **Stage0 backbone** | Codec | Tokens vs ref | Note |
+|---|---|---|---|---|---|
+| GCP n1-highmem-4 CPU (4 vCPU) | f32 | ~138 s | 2.0 s | 100% (exact) | same box as the T4 |
+| **Tesla T4 · CUDA** | **f32** | **3.15 s** | 2.0 s | **100% (exact)** | **≈44× vs same-box CPU** |
+| Tesla T4 · CUDA | f16 | **1.74 s** | 2.0 s | 4.7% † | fastest; tensor cores |
+| Apple M4 Pro CPU (12c) | f32 | 19.6 s | 0.39 s | 100% (exact) | consumer CPU |
+| **Apple M4 Pro · Metal** | f32 | **2.18 s** | 0.37 s | 83% † | **RTF 0.89 — faster than real-time** |
+
+- **CUDA f32 is reference-exact (100%) *and* ~44× faster** than the same machine's CPU on the backbone.
+- **Metal on M4 runs faster than real-time** (RTF 0.89) end-to-end.
+- † GPU float reductions aren't bit-identical to CPU, and argmax over near-tied diffusion logits is
+  sensitive — so f16 (and, less so, Metal f32) take a *different valid sampling path*, not worse audio.
+  The upstream reference likewise treats exact-token parity as diagnostic-only. **Use `tts` (CPU f32)
+  when you need bit-exact reproducibility; use `tts_cuda` for speed.**
+- The codec (0.37 s on M4) is only slow on the T4 box because that VM's CPU is weak; it's not on the GPU.
 
 ## Architecture (see `MODEL_SPEC.md`, `STAGE0_DESIGN.md`)
 - **Backbone**: Qwen3-0.6B, 28 layers, **bidirectional** (non-causal) attention, per-head q/k
@@ -80,10 +91,29 @@ and quantization. The upstream model reports RTF 0.025 (40× real-time) on GPU.
 ```bash
 git clone https://github.com/rockerritesh/omnivoice-tts.cpp
 cd omnivoice-tts.cpp
-./scripts/setup.sh          # downloads model (~3.5GB), fetches ggml, converts weights, builds
+./scripts/setup.sh          # downloads model (~3.5GB), fetches ggml, converts weights, builds (CPU)
+```
+`setup.sh` builds the **CPU** binary. For GPU, reconfigure with one flag and build `tts_cuda`:
+```bash
+# NVIDIA CUDA  (set the arch: T4=75, A100=80, L4/Ada=89, H100=90)
+export PATH=/usr/local/cuda/bin:$PATH
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DOMNI_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
+cmake --build build --target tts_cuda -j
 
-# end-to-end text -> speech (writes out.wav, 24 kHz mono):
-./build/tts models/omnivoice-generator.gguf models/omnivoice-codec.gguf \
+# Apple Metal (MPS) — macOS / Apple Silicon
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DOMNI_METAL=ON
+cmake --build build --target tts_cuda -j
+
+# CPU-only backend build of the same binary (no flags)
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build --target tts_cuda -j
+```
+Run — `tts` (CPU, reference-exact) and `tts_cuda` (CUDA/Metal/CPU) take identical args:
+```bash
+# reference-exact CPU:
+./build/tts       models/omnivoice-generator.gguf models/omnivoice-codec.gguf \
+    models/tokenizer.bin out.wav --text "Hello, this is a test." --lang en
+# GPU-accelerated (auto-uses CUDA or Metal if built with it, else CPU):
+./build/tts_cuda  models/omnivoice-generator.gguf models/omnivoice-codec.gguf \
     models/tokenizer.bin out.wav --text "Hello, this is a test." --lang en
 
 # other languages (code from k2-fsa/OmniVoice, e.g. hi, mai, npi, zh, es):
@@ -104,9 +134,14 @@ step 2 is a no-op. Weights are pulled automatically; nothing model-related is co
 - ggml `conv_transpose_1d` has no padding/output_padding; crop `(s+1)/2` from the left to
   reproduce PyTorch `padding=ceil(s/2), output_padding=s%2`.
 
+For max GPU throughput, convert an f16 generator (`python tools/convert_omnivoice_to_gguf.py
+--part generator --dtype f16`) — ~1.6× faster on the T4 via tensor cores, but it takes a different
+sampling path (see the † note). Keep the f32 generator for reference-exact output.
+
 ## Layout
-`src/` C++ engine · `tools/` GGUF converter + numpy oracles · `vendor/ggml` (fetched) ·
-`reference/omnivoice-rs` (studied, gitignored) · `models/*.gguf` (generated) · `samples/` demos.
+`src/` C++ engine (`tts.cpp` CPU-exact · `tts_cuda.cpp` CUDA/Metal/CPU via ggml-backend) ·
+`tools/` GGUF converter + numpy oracles · `vendor/ggml` (fetched) · `models/*.gguf` (generated) ·
+`samples/` demos.
 
 ## License
 Original code here: **PolyForm Noncommercial License 1.0.0** — free for research, education, and

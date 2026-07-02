@@ -8,10 +8,19 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # CPU-only first, for bit-approximate parity against the numpy/Rust reference.
-# Metal can be enabled later once parity is established.
-set(GGML_METAL OFF CACHE BOOL "" FORCE)
+# Pass -DOMNI_CUDA=ON to build the GPU engine (tts_cuda) with the ggml CUDA backend.
+option(OMNI_CUDA "Build tts_cuda with ggml CUDA backend" OFF)
+option(OMNI_METAL "Build tts_cuda with ggml Metal (Apple GPU) backend" OFF)
 set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+if(OMNI_CUDA)
+  set(GGML_CUDA ON CACHE BOOL "" FORCE)
+endif()
+if(OMNI_METAL)
+  set(GGML_METAL ON CACHE BOOL "" FORCE)
+else()
+  set(GGML_METAL OFF CACHE BOOL "" FORCE)  # CPU-default keeps reference parity
+endif()
 
 add_subdirectory(vendor/ggml)
 
@@ -32,3 +41,14 @@ add_executable(test_tokenizer src/test_tokenizer.cpp)
 add_executable(tts src/tts.cpp)
 target_link_libraries(tts PRIVATE ggml)
 target_include_directories(tts PRIVATE vendor/ggml/include)
+
+# GPU-capable engine (backbone via ggml-backend; CUDA when OMNI_CUDA=ON, else CPU backend)
+add_executable(tts_cuda src/tts_cuda.cpp)
+target_link_libraries(tts_cuda PRIVATE ggml)
+target_include_directories(tts_cuda PRIVATE vendor/ggml/include)
+if(OMNI_CUDA)
+  target_compile_definitions(tts_cuda PRIVATE OMNI_USE_CUDA)
+endif()
+if(OMNI_METAL)
+  target_compile_definitions(tts_cuda PRIVATE OMNI_USE_METAL)
+endif()
