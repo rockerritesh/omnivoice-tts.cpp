@@ -72,6 +72,26 @@ Benchmark — "Hello, this is a test…" (2.88 s audio, 32 diffusion steps = 64 
   when you need bit-exact reproducibility; use `tts_cuda` for speed.**
 - The codec (0.37 s on M4) is only slow on the T4 box because that VM's CPU is weak; it's not on the GPU.
 
+### vs official PyTorch (honest)
+The official `omnivoice` (PyTorch) engine is **faster, and by a lot on NVIDIA**:
+
+| Device | official torch (fp16) | this engine (f32) | torch advantage |
+|---|---|---|---|
+| NVIDIA L4 · CUDA | RTF ~0.15 | RTF ~1.85 | **~12×** |
+| Apple M4 · MPS/Metal | RTF 0.66 | RTF 0.89 | ~1.35× |
+
+torch's **CUDA** kernels are elite (fused/flash attention, cuDNN, fp16 tensor cores, batched CFG),
+so it dominates on NVIDIA; its **MPS** backend is much less tuned, so this engine stays close on Apple.
+This engine is also correct-but-naive: it runs cond/uncond as **two** forwards (torch batches them),
+**rebuilds+reallocates the graph every one of the 64 steps** (torch reuses/captures), and was measured
+at **f32** (vs torch fp16). Roadmap to narrow the CUDA gap (target ~3–4×, not parity): batch CFG,
+build-graph-once / CUDA graphs, ggml flash-attention, and f16 with an f32 logit head to avoid the
+argmax cascade.
+
+**Positioning:** the goal isn't to beat PyTorch on a datacenter GPU — it's a **dependency-free native
+binary** (no Python/torch), competitive on **CPU and Apple Metal**, shipping GGUF weights, runnable
+anywhere ggml runs (edge/embedded/Apple/CPU). On NVIDIA, use PyTorch; for a lean portable binary, use this.
+
 ## Architecture (see `MODEL_SPEC.md`, `STAGE0_DESIGN.md`)
 - **Backbone**: Qwen3-0.6B, 28 layers, **bidirectional** (non-causal) attention, per-head q/k
   RMSNorm, NEOX RoPE θ=1e6, GQA 16/8, SwiGLU. Reused by both diffusion forwards.
