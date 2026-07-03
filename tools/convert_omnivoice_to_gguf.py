@@ -149,7 +149,7 @@ def convert_generator(src: Path, out: Path, want_f16: bool) -> None:
 # ---------------------------------------------------------------------------
 # codec (Higgs Audio V2 tokenizer)
 # ---------------------------------------------------------------------------
-def convert_codec(src: Path, out: Path, want_f16: bool) -> None:
+def convert_codec(src: Path, out: Path, want_f16: bool, conv_f32: bool = False) -> None:
     cfg = json.loads((src / "audio_tokenizer/config.json").read_text())
     ac = cfg["acoustic_model_config"]
     st = src / "audio_tokenizer/model.safetensors"
@@ -189,10 +189,10 @@ def convert_codec(src: Path, out: Path, want_f16: bool) -> None:
             skipped += 1
             continue
         arr = np.ascontiguousarray(arr)
-        # ggml_conv_1d / conv_transpose_1d require F16 kernels (im2col path).
-        # 3D tensors here are conv kernels; everything else (codebook embeds,
-        # fc2, biases, snake alphas) stays F32 for numerical fidelity.
-        if arr.ndim == 3 and key.endswith(".weight") and arr.dtype == np.float32:
+        # CPU ggml_conv_1d/im2col REQUIRES f16 conv kernels; CUDA/Metal accept f32
+        # and CUDA's conv_transpose_1d is f32-ONLY. So: f16 conv kernels for the CPU
+        # codec (default), f32 conv kernels (--codec-conv-f32) to run the codec on GPU.
+        if (not conv_f32) and arr.ndim == 3 and key.endswith(".weight") and arr.dtype == np.float32:
             arr = arr.astype(np.float16)  # conv kernels only; snake .alpha stays f32
         writer.add_tensor(key, arr)
         n += 1
@@ -215,6 +215,8 @@ def main() -> int:
                     help="weight dtype for 2D+ matrices (default f32 for parity)")
     ap.add_argument("--part", choices=["all", "generator", "codec"],
                     default="all")
+    ap.add_argument("--codec-conv-f32", action="store_true",
+                    help="keep codec conv kernels f32 (needed to run the codec on GPU/CUDA)")
     args = ap.parse_args()
 
     if args.src is None or not Path(args.src).exists():
@@ -228,7 +230,7 @@ def main() -> int:
     if args.part in ("all", "generator"):
         convert_generator(args.src, args.out / "omnivoice-generator.gguf", want_f16)
     if args.part in ("all", "codec"):
-        convert_codec(args.src, args.out / "omnivoice-codec.gguf", want_f16)
+        convert_codec(args.src, args.out / "omnivoice-codec.gguf", want_f16, args.codec_conv_f32)
     print("done.")
     return 0
 

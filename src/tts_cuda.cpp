@@ -175,11 +175,15 @@ static void fwd_run(ggml_backend_t backend, Fwd * f, const std::vector<int32_t> 
 }
 
 // ---- codec decode on CPU (unchanged from tts.cpp) ----
+// Codec decode on CPU. ggml's CUDA conv_transpose_1d kernel is unoptimized and ~40x
+// SLOWER than CPU for this upsampling (measured 14s on T4 vs 0.4s on a normal CPU),
+// so the codec always runs on CPU regardless of the backbone backend.
 static std::vector<float> decode_codec(ggml_context * wctx, const std::vector<int64_t> & toks, int C, int T) {
     const int strides[5] = { 8, 5, 4, 2, 3 };
     ggml_init_params cp = { (size_t) 6ULL * 1024 * 1024 * 1024, nullptr, false };
     ggml_context * ctx = ggml_init(cp);
     ggml_tensor * eps = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, 1, 1); ((float*)eps->data)[0] = 1e-9f;
+
     auto conv1d = [&](ggml_tensor * x, const std::string & n, int pad, int dil) {
         ggml_tensor * y = ggml_conv_1d(ctx, must(wctx, n+".weight"), x, 1, pad, dil);
         ggml_tensor * b = ggml_get_tensor(wctx, (n+".bias").c_str());
@@ -327,7 +331,7 @@ int main(int argc, char ** argv) {
     if(!cg){ fprintf(stderr,"codec load fail\n"); return 1; }
     std::vector<int64_t> toks64((size_t)C*target_len); for(size_t i=0;i<toks64.size();i++) toks64[i]=tokens[i];
     auto tc0=std::chrono::high_resolution_clock::now();
-    std::vector<float> wav=decode_codec(cwctx,toks64,C,target_len);
+    std::vector<float> wav=decode_codec(cwctx,toks64,C,target_len);  // CPU codec (f16 gguf)
     double codec_s=std::chrono::duration<double>(std::chrono::high_resolution_clock::now()-tc0).count();
     double audio_s = wav.size()/24000.0;
     printf("codec: %.2fs | audio %.2fs | RTF %.2f (stage0+codec / audio)\n", codec_s, audio_s, (stage0_s+codec_s)/audio_s);

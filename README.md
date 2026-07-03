@@ -88,15 +88,24 @@ faster than f32 on the T4 (27 vs 49 ms/fwd), which wouldn't happen if launch/all
 So the CUDA gap is roughly: **f32-vs-fp16 (~2×) × unbatched-CFG (~2×) × ggml-vs-cuDNN/flash kernels
 for this small-seq shape (~2–3×)**.
 
-**Optimizations applied:** the graph is now **built once and reused across all 64 forwards** (was
-rebuilt+reallocated each step) — ~10% on GPU, ~15% on CPU, 100% token-parity preserved. **f16 is a
-valid fast path** (produces good speech, like torch's fp16; ~2× on CUDA tensor cores). Further levers:
-**batched CFG** (~2×, in progress) and **ggml flash-attention**.
+**Optimizations applied & tested:**
+- **Persistent graph** — built once, reused across all 64 forwards (was rebuilt+reallocated each
+  step). 100% token-parity preserved.
+- **f16 backbone on GPU** — valid speech (like torch's fp16), ~2× via T4 tensor cores. The backbone
+  alone is fast: **stage0 = 0.59 s @ 8 steps / 1.73 s @ 32 steps on the T4** (RTF ~0.20–0.60).
 
-**Honest ceiling:** beating PyTorch on a datacenter NVIDIA GPU is *not* a realistic target — cuDNN +
-flash-attention are the product of years of kernel engineering. The achievable goal is narrowing the
-CUDA gap to ~3×; the engine already **wins on what it's for**: no Python/torch runtime, competitive on
-CPU/Apple-Metal, GGUF weights, portable to edge/embedded.
+**Two things I tried that did NOT work (measured, honest):**
+- **Codec on GPU** — ggml's CUDA `conv_transpose_1d` is unoptimized: **14 s** on the T4 vs **0.4 s**
+  on a normal CPU (~40× slower). The codec **stays on CPU**. (`--codec-conv-f32` exists if you want to
+  experiment.) On the benchmark VM the codec's 2.5 s is a *weak-4-vCPU artifact*, not the engine.
+- **Batched CFG** — pointless here: each forward is compute-bound (proven: f16 is 2× f32), so batching
+  cond+uncond just pads the shorter one (+29% compute) for ~no launch-savings win.
+
+**Honest ceiling:** beating PyTorch on a datacenter NVIDIA GPU is **not achievable** — its CUDA path
+(cuDNN, flash-attention, fused kernels, GPU codec) is years of kernel engineering; ggml won't out-kernel
+it for this workload. The backbone is competitive (~2–3× behind on compute); torch wins end-to-end on
+CUDA. This engine **wins on what it's for**: no Python/torch runtime, competitive on CPU/Apple-Metal
+(faster than real-time on M4), GGUF weights, portable to edge/embedded.
 
 **Positioning:** the goal isn't to beat PyTorch on a datacenter GPU — it's a **dependency-free native
 binary** (no Python/torch), competitive on **CPU and Apple Metal**, shipping GGUF weights, runnable
