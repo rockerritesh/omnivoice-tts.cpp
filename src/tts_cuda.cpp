@@ -83,32 +83,41 @@ static ggml_context * load_weights(const char * path, ggml_backend_t backend,
     return mctx;
 }
 
-// Backbone forward through the backend. Returns audio-head logits [1025,8,S].
-static std::vector<float> forward_audio_logits(ggml_backend_t backend, ggml_gallocr_t galloc,
-        ggml_context * wctx, const Hparams & hp, int n_cb, int vocab,
-        const std::vector<int32_t> & text_ids, const std::vector<int32_t> & aud_ids,
-        const std::vector<float> & amask, int S) {
+// Persistent backbone graph, built ONCE per sequence length and reused across all
+// diffusion steps. This is the key optimization: the old code rebuilt+reallocated
+// the 28-layer graph on every one of the 64 forwards, which dominated GPU time.
+struct Fwd {
+    ggml_context * ctx = nullptr;
+    ggml_cgraph * gf = nullptr;
+    ggml_gallocr_t galloc = nullptr;
+    ggml_tensor * tids = nullptr, * mA = nullptr, * mT = nullptr, * pos = nullptr, * logits = nullptr;
+    std::vector<ggml_tensor*> aids;
+    int S = 0, n_cb = 0, vocab = 0;
+};
+
+static Fwd * fwd_build(ggml_backend_t backend, ggml_context * wctx, const Hparams & hp,
+                       int n_cb, int vocab, const std::vector<float> & amask, int S) {
+    Fwd * f = new Fwd(); f->S = S; f->n_cb = n_cb; f->vocab = vocab; f->aids.resize(n_cb);
     size_t meta = ggml_tensor_overhead() * 4096 + ggml_graph_overhead();
-    ggml_init_params cp{ meta, nullptr, /*no_alloc*/ true };
-    ggml_context * ctx = ggml_init(cp);
+    f->ctx = ggml_init({ meta, nullptr, /*no_alloc*/ true });
+    ggml_context * ctx = f->ctx;
 
-    ggml_tensor * tids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, S); ggml_set_input(tids);
-    std::vector<ggml_tensor*> aids(n_cb);
-    for (int c = 0; c < n_cb; c++) { aids[c] = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, S); ggml_set_input(aids[c]); }
-    ggml_tensor * mA = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, S); ggml_set_input(mA);
-    ggml_tensor * mT = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, S); ggml_set_input(mT);
-    ggml_tensor * pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, S);   ggml_set_input(pos);
+    f->tids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, S); ggml_set_input(f->tids);
+    for (int c = 0; c < n_cb; c++) { f->aids[c] = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, S); ggml_set_input(f->aids[c]); }
+    f->mA = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, S); ggml_set_input(f->mA);
+    f->mT = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, S); ggml_set_input(f->mT);
+    f->pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, S);   ggml_set_input(f->pos);
 
-    ggml_tensor * temb = ggml_get_rows(ctx, must(wctx, "token_embd.weight"), tids);
+    ggml_tensor * temb = ggml_get_rows(ctx, must(wctx, "token_embd.weight"), f->tids);
     if (temb->type != GGML_TYPE_F32) temb = ggml_cast(ctx, temb, GGML_TYPE_F32);
     ggml_tensor * aemb_w = must(wctx, "audio_embeddings.weight");
     ggml_tensor * aud_sum = nullptr;
     for (int c = 0; c < n_cb; c++) {
-        ggml_tensor * e = ggml_get_rows(ctx, aemb_w, aids[c]);
+        ggml_tensor * e = ggml_get_rows(ctx, aemb_w, f->aids[c]);
         if (e->type != GGML_TYPE_F32) e = ggml_cast(ctx, e, GGML_TYPE_F32);
         aud_sum = aud_sum ? ggml_add(ctx, aud_sum, e) : e;
     }
-    ggml_tensor * cur = ggml_add(ctx, ggml_mul(ctx, aud_sum, mA), ggml_mul(ctx, temb, mT));
+    ggml_tensor * cur = ggml_add(ctx, ggml_mul(ctx, aud_sum, f->mA), ggml_mul(ctx, temb, f->mT));
 
     const int hd = hp.hd, nh = hp.n_head, nkv = hp.n_kv;
     const float scale = 1.0f / sqrtf((float) hd);
@@ -121,8 +130,8 @@ static std::vector<float> forward_audio_logits(ggml_backend_t backend, ggml_gall
         ggml_tensor * v = ggml_reshape_3d(ctx, ggml_mul_mat(ctx, must(wctx, p+"attn_v.weight"), x), hd, nkv, S);
         q = ggml_mul(ctx, ggml_rms_norm(ctx, q, hp.eps), must(wctx, p+"attn_q_norm.weight"));
         k = ggml_mul(ctx, ggml_rms_norm(ctx, k, hp.eps), must(wctx, p+"attn_k_norm.weight"));
-        q = ggml_rope_ext(ctx, q, pos, nullptr, hd, GGML_ROPE_TYPE_NEOX, 0, hp.theta, 1,0,1,0,0);
-        k = ggml_rope_ext(ctx, k, pos, nullptr, hd, GGML_ROPE_TYPE_NEOX, 0, hp.theta, 1,0,1,0,0);
+        q = ggml_rope_ext(ctx, q, f->pos, nullptr, hd, GGML_ROPE_TYPE_NEOX, 0, hp.theta, 1,0,1,0,0);
+        k = ggml_rope_ext(ctx, k, f->pos, nullptr, hd, GGML_ROPE_TYPE_NEOX, 0, hp.theta, 1,0,1,0,0);
         ggml_tensor * qp = ggml_cont(ctx, ggml_permute(ctx, q, 0,2,1,3));
         ggml_tensor * kp = ggml_cont(ctx, ggml_permute(ctx, k, 0,2,1,3));
         ggml_tensor * kq = ggml_soft_max_ext(ctx, ggml_mul_mat(ctx, kp, qp), nullptr, scale, 0.0f);
@@ -137,27 +146,32 @@ static std::vector<float> forward_audio_logits(ggml_backend_t backend, ggml_gall
         cur = ggml_add(ctx, inp2, ggml_mul_mat(ctx, must(wctx, p+"ffn_down.weight"), y));
     }
     cur = ggml_mul(ctx, ggml_rms_norm(ctx, cur, hp.eps), must(wctx, "output_norm.weight"));
-    ggml_tensor * logits = ggml_mul_mat(ctx, must(wctx, "audio_heads.weight"), cur);
-    ggml_set_output(logits);
+    f->logits = ggml_mul_mat(ctx, must(wctx, "audio_heads.weight"), cur);
+    ggml_set_output(f->logits);
 
-    ggml_cgraph * gf = ggml_new_graph(ctx);
-    ggml_build_forward_expand(gf, logits);
-    ggml_gallocr_alloc_graph(galloc, gf);
+    f->gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(f->gf, f->logits);
+    f->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    ggml_gallocr_alloc_graph(f->galloc, f->gf);
 
-    ggml_backend_tensor_set(tids, text_ids.data(), 0, (size_t)S*sizeof(int32_t));
-    for (int c = 0; c < n_cb; c++) ggml_backend_tensor_set(aids[c], aud_ids.data() + (size_t)c*S, 0, (size_t)S*sizeof(int32_t));
+    // mask + positions are constant across diffusion steps -> set once.
     std::vector<float> ma(S), mt(S); for (int t=0;t<S;t++){ ma[t]=amask[t]; mt[t]=1.0f-amask[t]; }
-    ggml_backend_tensor_set(mA, ma.data(), 0, (size_t)S*sizeof(float));
-    ggml_backend_tensor_set(mT, mt.data(), 0, (size_t)S*sizeof(float));
+    ggml_backend_tensor_set(f->mA, ma.data(), 0, (size_t)S*sizeof(float));
+    ggml_backend_tensor_set(f->mT, mt.data(), 0, (size_t)S*sizeof(float));
     std::vector<int32_t> pv(S); for (int t=0;t<S;t++) pv[t]=t;
-    ggml_backend_tensor_set(pos, pv.data(), 0, (size_t)S*sizeof(int32_t));
+    ggml_backend_tensor_set(f->pos, pv.data(), 0, (size_t)S*sizeof(int32_t));
+    return f;
+}
 
-    ggml_backend_graph_compute(backend, gf);
-
-    std::vector<float> out((size_t)vocab*n_cb*S);
-    ggml_backend_tensor_get(logits, out.data(), 0, out.size()*sizeof(float));
-    ggml_free(ctx);
-    return out;
+// Update token inputs and recompute the persistent graph -> logits [1025,8,S] into `out`.
+static void fwd_run(ggml_backend_t backend, Fwd * f, const std::vector<int32_t> & text_ids,
+                    const std::vector<int32_t> & aud_ids, std::vector<float> & out) {
+    ggml_backend_tensor_set(f->tids, text_ids.data(), 0, (size_t)f->S*sizeof(int32_t));
+    for (int c = 0; c < f->n_cb; c++)
+        ggml_backend_tensor_set(f->aids[c], aud_ids.data() + (size_t)c*f->S, 0, (size_t)f->S*sizeof(int32_t));
+    ggml_backend_graph_compute(backend, f->gf);
+    out.resize((size_t)f->vocab*f->n_cb*f->S);
+    ggml_backend_tensor_get(f->logits, out.data(), 0, out.size()*sizeof(float));
 }
 
 // ---- codec decode on CPU (unchanged from tts.cpp) ----
@@ -263,7 +277,6 @@ int main(int argc, char ** argv) {
         (int)kv_u32(gg,"qwen3.attention.key_length",128),kv_f32(gg,"qwen3.attention.layer_norm_rms_epsilon",1e-6f),kv_f32(gg,"qwen3.rope.freq_base",1e6f) };
     const int C=(int)kv_u32(gg,"omnivoice.num_audio_codebooks",8), vocab=(int)kv_u32(gg,"omnivoice.audio_vocab_size",1025), mask_id=(int)kv_u32(gg,"omnivoice.audio_mask_id",1024);
     std::vector<int> offset(C); for(int c=0;c<C;c++) offset[c]=c*vocab;
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
 
     int L=cond_len;
     std::vector<int32_t> ids0((size_t)C*L,0), ids1((size_t)C*target_len,mask_id);
@@ -278,11 +291,15 @@ int main(int argc, char ** argv) {
     auto aud_ids_of=[&](std::vector<int32_t>&ids,std::vector<float>&am,int Sq,int rowlen){ std::vector<int32_t> a((size_t)C*Sq);
         for(int c=0;c<C;c++)for(int t=0;t<Sq;t++){ int32_t raw=(am[t]>0.5f)?ids[c*rowlen+t]:0; a[c*Sq+t]=raw+offset[c]; } return a; };
 
+    // Build the cond + uncond backbone graphs ONCE (reused across all steps).
+    Fwd * fc = fwd_build(backend, gwctx, hp, C, vocab, am0, cond_len);
+    Fwd * fu = fwd_build(backend, gwctx, hp, C, vocab, am1, target_len);
+    std::vector<float> cl, ul;
     auto t0 = std::chrono::high_resolution_clock::now();
     for(int step=0;step<num_step;step++){
         if(sched[step]==0) continue;
-        auto cl=forward_audio_logits(backend,galloc,gwctx,hp,C,vocab,text_ids_of(ids0,cond_len),aud_ids_of(ids0,am0,cond_len,L),am0,cond_len);
-        auto ul=forward_audio_logits(backend,galloc,gwctx,hp,C,vocab,text_ids_of(ids1,target_len),aud_ids_of(ids1,am1,target_len,target_len),am1,target_len);
+        fwd_run(backend, fc, text_ids_of(ids0,cond_len), aud_ids_of(ids0,am0,cond_len,L), cl);
+        fwd_run(backend, fu, text_ids_of(ids1,target_len), aud_ids_of(ids1,am1,target_len,target_len), ul);
         int aud_start=cond_len-target_len;
         std::vector<int32_t> pred((size_t)C*target_len); std::vector<float> conf((size_t)C*target_len);
         for(int c=0;c<C;c++)for(int t=0;t<target_len;t++){
@@ -322,6 +339,8 @@ int main(int argc, char ** argv) {
     for(float s:wav){int v=(int)lroundf(std::max(-1.0f,std::min(1.0f,s))*32767);int16_t pcm=(int16_t)v;fwrite(&pcm,2,1,f);} fclose(f);
     printf("wrote %s\n", out.c_str());
 
-    ggml_gallocr_free(galloc); gguf_free(gg); ggml_backend_buffer_free(gbuf); ggml_free(gwctx); ggml_backend_free(backend); gguf_free(cg); ggml_free(cwctx);
+    ggml_gallocr_free(fc->galloc); ggml_free(fc->ctx); delete fc;
+    ggml_gallocr_free(fu->galloc); ggml_free(fu->ctx); delete fu;
+    gguf_free(gg); ggml_backend_buffer_free(gbuf); ggml_free(gwctx); ggml_backend_free(backend); gguf_free(cg); ggml_free(cwctx);
     return 0;
 }

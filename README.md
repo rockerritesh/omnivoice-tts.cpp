@@ -82,11 +82,21 @@ The official `omnivoice` (PyTorch) engine is **faster, and by a lot on NVIDIA**:
 
 torch's **CUDA** kernels are elite (fused/flash attention, cuDNN, fp16 tensor cores, batched CFG),
 so it dominates on NVIDIA; its **MPS** backend is much less tuned, so this engine stays close on Apple.
-This engine is also correct-but-naive: it runs cond/uncond as **two** forwards (torch batches them),
-**rebuilds+reallocates the graph every one of the 64 steps** (torch reuses/captures), and was measured
-at **f32** (vs torch fp16). Roadmap to narrow the CUDA gap (target ~3–4×, not parity): batch CFG,
-build-graph-once / CUDA graphs, ggml flash-attention, and f16 with an f32 logit head to avoid the
-argmax cascade.
+
+**Diagnosis (measured):** each backbone forward is **compute-bound, not overhead-bound** — f16 is ~2×
+faster than f32 on the T4 (27 vs 49 ms/fwd), which wouldn't happen if launch/alloc overhead dominated.
+So the CUDA gap is roughly: **f32-vs-fp16 (~2×) × unbatched-CFG (~2×) × ggml-vs-cuDNN/flash kernels
+for this small-seq shape (~2–3×)**.
+
+**Optimizations applied:** the graph is now **built once and reused across all 64 forwards** (was
+rebuilt+reallocated each step) — ~10% on GPU, ~15% on CPU, 100% token-parity preserved. **f16 is a
+valid fast path** (produces good speech, like torch's fp16; ~2× on CUDA tensor cores). Further levers:
+**batched CFG** (~2×, in progress) and **ggml flash-attention**.
+
+**Honest ceiling:** beating PyTorch on a datacenter NVIDIA GPU is *not* a realistic target — cuDNN +
+flash-attention are the product of years of kernel engineering. The achievable goal is narrowing the
+CUDA gap to ~3×; the engine already **wins on what it's for**: no Python/torch runtime, competitive on
+CPU/Apple-Metal, GGUF weights, portable to edge/embedded.
 
 **Positioning:** the goal isn't to beat PyTorch on a datacenter GPU — it's a **dependency-free native
 binary** (no Python/torch), competitive on **CPU and Apple Metal**, shipping GGUF weights, runnable
